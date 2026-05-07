@@ -13,6 +13,7 @@ from functools import partial
 from pathlib import Path
 
 from src import ingest
+from src.extractors import ANTI_BOT_MESSAGE
 from src.storage import find_existing_document
 from src.utils import load_settings
 
@@ -42,6 +43,9 @@ class KnowledgeOSSmokeTests(unittest.TestCase):
         os.environ["SQLITE_DB_PATH"] = str(self.root / "data" / "knowledge.db")
         os.environ["REPORTS_PATH"] = str(self.root / "reports")
         os.environ["EXPORTS_PATH"] = str(self.root / "exports")
+        os.environ["LLM_PROVIDER"] = "openai"
+        os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434"
+        os.environ["OLLAMA_MODEL"] = "llama3.1"
         self.settings = load_settings(create_dirs=True)
         self.original_summarize = ingest.summarize_text
         ingest.summarize_text = fake_summary
@@ -91,6 +95,35 @@ class KnowledgeOSSmokeTests(unittest.TestCase):
         self.assertEqual(result.status, "processed", result)
         existing = find_existing_document(self.settings.sqlite_db_path, source_url=url)
         self.assertIsNotNone(existing)
+
+    def test_url_verification_page_does_not_persist_or_summarize(self) -> None:
+        """Block anti-bot verification pages before LLM and persistence."""
+
+        def fail_summary(text: str, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("LLM should not be called for verification pages")
+
+        ingest.summarize_text = fail_summary
+        web_dir = self.root / "blocked_web"
+        web_dir.mkdir()
+        (web_dir / "index.html").write_text(
+            "<html><head><title>Verify</title></head>"
+            "<body><main>当前环境存在异常，需要完成验证 captcha verify</main></body></html>",
+            encoding="utf-8",
+        )
+
+        handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(web_dir))
+        with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            url = f"http://127.0.0.1:{server.server_address[1]}/index.html"
+            result = ingest.process_url(url, settings=self.settings)
+            server.shutdown()
+            thread.join(timeout=5)
+
+        self.assertEqual(result.status, "blocked", result)
+        self.assertEqual(result.message, ANTI_BOT_MESSAGE)
+        self.assertFalse(self.settings.sqlite_db_path.exists())
+        self.assertEqual(list(self.settings.knowledge_base_path.rglob("*.md")), [])
 
     def _write_docx(self, path: Path) -> None:
         """Create a small DOCX fixture if python-docx is installed."""

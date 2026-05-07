@@ -7,10 +7,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.extractors import ExtractedContent, ExtractionError, extract_file, extract_url
+from src.extractors import AntiBotDetectionError, ExtractedContent, ExtractionError, extract_file, extract_url
 from src.storage import find_existing_document, insert_document, save_markdown_summary
 from src.summarizer import MissingAPIKeyError, SummarizationError, summarize_text
-from src.utils import AppSettings, iter_supported_files, load_settings, now_iso
+from src.utils import AppSettings, iter_supported_files, load_settings
 
 
 @dataclass
@@ -38,6 +38,13 @@ def process_url(url: str, *, settings: AppSettings | None = None) -> ProcessResu
     try:
         extracted = extract_url(url)
         return _process_extracted(extracted, settings=settings)
+    except AntiBotDetectionError as exc:
+        return ProcessResult(
+            status="blocked",
+            source=url,
+            source_type="url",
+            message=str(exc),
+        )
     except Exception as exc:
         return _error_result(url, "url", exc)
 
@@ -87,9 +94,11 @@ def _process_extracted(extracted: ExtractedContent, *, settings: AppSettings) ->
     try:
         summary = summarize_text(
             extracted.text,
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
             source=source,
+            provider=settings.llm_provider,
+            model=settings.active_llm_model,
+            api_key=settings.openai_api_key,
+            ollama_base_url=settings.ollama_base_url,
             title_hint=extracted.title,
             max_chars=settings.max_input_chars,
         )

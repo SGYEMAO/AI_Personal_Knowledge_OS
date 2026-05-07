@@ -26,13 +26,23 @@ class AppSettings:
     sqlite_db_path: Path
     reports_path: Path
     exports_path: Path
+    llm_provider: str = "openai"
     openai_model: str = "gpt-4o-mini"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
     max_input_chars: int = 12000
 
     @property
     def knowledge_root(self) -> Path:
         """Return the parent directory that stores durable knowledge assets."""
         return self.knowledge_base_path.parent
+
+    @property
+    def active_llm_model(self) -> str:
+        """Return the model name for the selected LLM provider."""
+        if self.llm_provider == "ollama":
+            return self.ollama_model
+        return self.openai_model
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -44,6 +54,9 @@ def _env_path(name: str, default: Path) -> Path:
 def load_settings(create_dirs: bool = True) -> AppSettings:
     """Load application settings from .env and optionally create directories."""
     load_dotenv()
+    llm_provider = os.getenv("LLM_PROVIDER", "openai").strip().lower() or "openai"
+    if llm_provider not in {"openai", "ollama"}:
+        llm_provider = "openai"
 
     settings = AppSettings(
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
@@ -53,7 +66,11 @@ def load_settings(create_dirs: bool = True) -> AppSettings:
         sqlite_db_path=_env_path("SQLITE_DB_PATH", DEFAULT_KNOWLEDGE_ROOT / "data" / "knowledge.db"),
         reports_path=_env_path("REPORTS_PATH", DEFAULT_KNOWLEDGE_ROOT / "reports"),
         exports_path=_env_path("EXPORTS_PATH", DEFAULT_KNOWLEDGE_ROOT / "exports"),
+        llm_provider=llm_provider,
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
+        ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
+        or "http://localhost:11434",
+        ollama_model=os.getenv("OLLAMA_MODEL", "llama3.1").strip() or "llama3.1",
         max_input_chars=int(os.getenv("MAX_INPUT_CHARS", "12000")),
     )
 

@@ -10,6 +10,21 @@ class ExtractionError(Exception):
     """Raised when content extraction fails."""
 
 
+ANTI_BOT_MESSAGE = "该网页可能存在反爬虫或访问验证，无法直接提取正文。请尝试复制正文、使用其他网页，或保存为 PDF 后再导入。"
+ANTI_BOT_KEYWORDS = (
+    "当前环境存在异常",
+    "需要完成验证",
+    "environment_exception",
+    "access denied",
+    "verify",
+    "captcha",
+)
+
+
+class AntiBotDetectionError(ExtractionError):
+    """Raised when a URL looks like an anti-bot or verification page."""
+
+
 @dataclass(frozen=True)
 class ExtractedContent:
     """Normalized extracted text and source metadata."""
@@ -59,7 +74,16 @@ def extract_url(url: str) -> ExtractedContent:
     if not text.strip():
         raise ExtractionError(f"No readable text found at URL: {url}")
 
+    if looks_like_verification_page(text):
+        raise AntiBotDetectionError(ANTI_BOT_MESSAGE)
+
     return ExtractedContent(title=title or url, text=text, source_type="url", source_url=url)
+
+
+def looks_like_verification_page(text: str) -> bool:
+    """Return True when extracted URL text looks like anti-bot verification content."""
+    normalized = text.lower()
+    return any(keyword.lower() in normalized for keyword in ANTI_BOT_KEYWORDS)
 
 
 def _extract_url_with_bs4(url: str, html: str = "") -> tuple[str, str]:

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
-from src.utils import AppSettings, build_markdown_path, now_iso, unique_path
+from src.utils import AppSettings, build_markdown_path, load_settings, now_iso, unique_path
 
 
 CREATE_DOCUMENTS_TABLE_SQL = """
@@ -47,7 +47,8 @@ def find_existing_document(
     source_url: str | None = None,
 ) -> dict[str, Any] | None:
     """Return an existing record for a source path or URL if one exists."""
-    init_db(db_path)
+    if not db_path.exists():
+        return None
     clauses: list[str] = []
     params: list[str] = []
     if source_path:
@@ -67,8 +68,188 @@ def find_existing_document(
     )
     with sqlite3.connect(db_path) as connection:
         connection.row_factory = sqlite3.Row
-        row = connection.execute(query, params).fetchone()
+        try:
+            row = connection.execute(query, params).fetchone()
+        except sqlite3.OperationalError:
+            return None
         return dict(row) if row else None
+
+
+def search_documents(
+    keyword: str | None = None,
+    topic: str | None = None,
+    source_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
+    """Search stored document summaries with keyword, topic, source, and date filters."""
+    db_path = _configured_db_path()
+    if not _documents_table_exists(db_path):
+        return []
+
+    clauses: list[str] = []
+    params: list[str] = []
+
+    normalized_keyword = (keyword or "").strip().lower()
+    if normalized_keyword:
+        like_value = f"%{normalized_keyword}%"
+        searchable_fields = ("title", "summary", "topics", "entities", "source_path", "source_url")
+        clauses.append(
+            "(" + " OR ".join(f"LOWER(COALESCE({field}, '')) LIKE ?" for field in searchable_fields) + ")"
+        )
+        params.extend([like_value] * len(searchable_fields))
+
+    normalized_source_type = (source_type or "").strip().lower()
+    if normalized_source_type and normalized_source_type != "all":
+        if normalized_source_type == "webpage":
+            clauses.append(
+                "(COALESCE(source_url, '') != '' OR LOWER(COALESCE(source_type, '')) IN ('url', 'webpage'))"
+            )
+        elif normalized_source_type == "file":
+            clauses.append(
+                "(COALESCE(source_path, '') != '' OR LOWER(COALESCE(source_type, '')) NOT IN ('url', 'webpage'))"
+            )
+
+    query = (
+        "SELECT id, title, summary, source_type, source_path, source_url, topics, entities, "
+        "markdown_path, created_at, processed_at FROM documents"
+    )
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY processed_at DESC, id DESC"
+
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        try:
+            rows = [dict(row) for row in connection.execute(query, params).fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+    rows = [_normalize_document_row(row) for row in rows]
+    if topic and topic != "All Topics":
+        rows = [row for row in rows if topic in row.get("topics_list", [])]
+
+    start = _parse_search_date(start_date, end_of_day=False)
+    end = _parse_search_date(end_date, end_of_day=True)
+    if start or end:
+        rows = [row for row in rows if _row_matches_date_range(row, start=start, end=end)]
+
+    return rows
+
+
+def get_all_topics() -> list[str]:
+    """Return all unique topics stored in the documents table."""
+    db_path = _configured_db_path()
+    if not _documents_table_exists(db_path):
+        return []
+
+    topics: set[str] = set()
+    with sqlite3.connect(db_path) as connection:
+        try:
+            rows = connection.execute("SELECT topics FROM documents").fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    for (raw_topics,) in rows:
+        topics.update(parse_stored_list(raw_topics))
+    return sorted(topics, key=str.lower)
+
+
+def get_document_count() -> int:
+    """Return the number of stored document records, or 0 if the database is missing."""
+    db_path = _configured_db_path()
+    if not _documents_table_exists(db_path):
+        return 0
+
+    with sqlite3.connect(db_path) as connection:
+        try:
+            row = connection.execute("SELECT COUNT(*) FROM documents").fetchone()
+        except sqlite3.OperationalError:
+            return 0
+    return int(row[0]) if row else 0
+
+
+def parse_stored_list(value: object) -> list[str]:
+    """Parse a stored JSON-list or comma-separated string into a clean string list."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    raw_value = str(value).strip()
+    if not raw_value:
+        return []
+
+    try:
+        decoded = json.loads(raw_value)
+        if isinstance(decoded, list):
+            return [str(item).strip() for item in decoded if str(item).strip()]
+        if isinstance(decoded, str):
+            raw_value = decoded
+    except json.JSONDecodeError:
+        pass
+
+    return [part.strip(" -\t\r\n\"'") for part in raw_value.split(",") if part.strip(" -\t\r\n\"'")]
+
+
+def _configured_db_path() -> Path:
+    """Return the SQLite path from environment settings without creating directories."""
+    return load_settings(create_dirs=False).sqlite_db_path
+
+
+def _documents_table_exists(db_path: Path) -> bool:
+    """Return True when the configured database and documents table both exist."""
+    if not db_path.exists():
+        return False
+
+    with sqlite3.connect(db_path) as connection:
+        try:
+            row = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return False
+    return row is not None
+
+
+def _normalize_document_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Add parsed list and source-kind helpers to a search result row."""
+    normalized = dict(row)
+    normalized["topics_list"] = parse_stored_list(row.get("topics"))
+    normalized["entities_list"] = parse_stored_list(row.get("entities"))
+    normalized["source_kind"] = "webpage" if row.get("source_url") else "file"
+    return normalized
+
+
+def _parse_search_date(value: str | None, *, end_of_day: bool) -> datetime | None:
+    """Parse a date filter string, returning None when parsing fails."""
+    if not value:
+        return None
+    try:
+        parsed_date = date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+    parsed_time = time.max if end_of_day else time.min
+    return datetime.combine(parsed_date, parsed_time)
+
+
+def _row_matches_date_range(row: dict[str, Any], *, start: datetime | None, end: datetime | None) -> bool:
+    """Return True if a row's processed_at value falls inside an optional date range."""
+    raw_processed_at = row.get("processed_at")
+    if not raw_processed_at:
+        return True
+    try:
+        processed_at = datetime.fromisoformat(str(raw_processed_at))
+    except ValueError:
+        return True
+
+    if processed_at.tzinfo is not None:
+        processed_at = processed_at.replace(tzinfo=None)
+    if start and processed_at < start:
+        return False
+    if end and processed_at > end:
+        return False
+    return True
 
 
 def insert_document(
