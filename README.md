@@ -167,6 +167,23 @@ Search 页面顶部会显示：
 No knowledge database found yet. Please ingest some documents first.
 ```
 
+## Maintenance
+
+如果旧版本曾经把验证页、反爬页面或 `environment_exception` 内容写入知识库，可以运行维护脚本清理脏数据：
+
+```bash
+python scripts/clean_bad_records.py
+```
+
+脚本会读取 `.env` 中的 `SQLITE_DB_PATH`，删除 `documents` 表中 `title` 或 `summary` 命中验证页关键词的记录，并删除这些记录对应 `markdown_path` 指向的 Markdown 文件。数据库不存在时不会报错，只会提示 `No database found`。
+
+数据质量原则：
+
+```text
+Only processed knowledge records should be persisted.
+Blocked or failed pages are shown in UI/logs only and should not enter SQLite or Markdown knowledge base.
+```
+
 ## 支持的文件类型
 
 - 网页 URL：优先使用 `trafilatura`，失败后使用 `requests` + `BeautifulSoup`。

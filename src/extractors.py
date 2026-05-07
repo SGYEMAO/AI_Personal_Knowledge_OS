@@ -16,8 +16,11 @@ ANTI_BOT_KEYWORDS = (
     "需要完成验证",
     "environment_exception",
     "access denied",
-    "verify",
     "captcha",
+    "verify",
+    "verification required",
+    "robot check",
+    "suspicious activity",
 )
 
 

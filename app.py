@@ -55,10 +55,10 @@ def _render_result(result: ProcessResult) -> None:
             st.warning(result.message)
         elif result.status == "blocked":
             st.warning(result.message)
+        elif result.status == "failed":
+            st.error(result.error or result.message)
         else:
             st.error(result.error or result.message)
-            if result.markdown_path:
-                st.code(str(result.markdown_path))
 
 
 def _render_sidebar(settings: AppSettings) -> None:

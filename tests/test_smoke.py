@@ -107,7 +107,7 @@ class KnowledgeOSSmokeTests(unittest.TestCase):
         web_dir.mkdir()
         (web_dir / "index.html").write_text(
             "<html><head><title>Verify</title></head>"
-            "<body><main>当前环境存在异常，需要完成验证 captcha verify</main></body></html>",
+            "<body><main>environment_exception verification required captcha verify</main></body></html>",
             encoding="utf-8",
         )
 
@@ -122,6 +122,24 @@ class KnowledgeOSSmokeTests(unittest.TestCase):
 
         self.assertEqual(result.status, "blocked", result)
         self.assertEqual(result.message, ANTI_BOT_MESSAGE)
+        self.assertFalse(self.settings.sqlite_db_path.exists())
+        self.assertEqual(list(self.settings.knowledge_base_path.rglob("*.md")), [])
+
+    def test_failed_extraction_does_not_persist_or_summarize(self) -> None:
+        """Failed local extraction returns failed without LLM, SQLite, or Markdown."""
+
+        def fail_summary(text: str, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("LLM should not be called for failed extraction")
+
+        ingest.summarize_text = fail_summary
+        source_dir = self.root / "empty_source"
+        source_dir.mkdir()
+        empty_file = source_dir / "empty.txt"
+        empty_file.write_text("", encoding="utf-8")
+
+        result = ingest.process_file(empty_file, settings=self.settings)
+
+        self.assertEqual(result.status, "failed", result)
         self.assertFalse(self.settings.sqlite_db_path.exists())
         self.assertEqual(list(self.settings.knowledge_base_path.rglob("*.md")), [])
 

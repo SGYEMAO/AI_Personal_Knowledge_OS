@@ -90,6 +90,7 @@ def _process_extracted(extracted: ExtractedContent, *, settings: AppSettings) ->
     source = extracted.source_url or extracted.source_path or "unknown"
     processed_at_dt = datetime.now().astimezone()
     processed_at = processed_at_dt.isoformat(timespec="seconds")
+    markdown_path: Path | None = None
 
     try:
         summary = summarize_text(
@@ -131,8 +132,10 @@ def _process_extracted(extracted: ExtractedContent, *, settings: AppSettings) ->
             sqlite_status=f"Inserted documents.id={row_id}",
         )
     except (MissingAPIKeyError, SummarizationError, ExtractionError) as exc:
+        _cleanup_uncommitted_markdown(markdown_path)
         return _error_result(source, extracted.source_type, exc)
     except Exception as exc:
+        _cleanup_uncommitted_markdown(markdown_path)
         return _error_result(source, extracted.source_type, exc)
 
 
@@ -153,9 +156,20 @@ def _already_processed_result(source: str, source_type: str, existing: dict[str,
 def _error_result(source: str, source_type: str, exc: Exception) -> ProcessResult:
     """Build a non-crashing error result."""
     return ProcessResult(
-        status="error",
+        status="failed",
         source=source,
         source_type=source_type,
         message="Processing failed.",
         error=str(exc),
     )
+
+
+def _cleanup_uncommitted_markdown(markdown_path: Path | None) -> None:
+    """Remove a Markdown file created before a failed database write."""
+    if not markdown_path:
+        return
+    try:
+        if markdown_path.exists():
+            markdown_path.unlink()
+    except OSError:
+        pass
