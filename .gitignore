@@ -1,0 +1,10 @@
+venv/
+.env
+__pycache__/
+*.pyc
+*.db
+data/
+knowledge_base/
+logs/
+tmp/
+tests/_tmp/
