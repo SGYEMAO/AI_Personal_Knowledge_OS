@@ -184,6 +184,47 @@ Only processed knowledge records should be persisted.
 Blocked or failed pages are shown in UI/logs only and should not enter SQLite or Markdown knowledge base.
 ```
 
+## v0.3 Semantic Search / Vector Search
+
+v0.3 在 keyword search 之外增加 semantic search。系统会从 SQLite `documents` 表读取已经处理成功的知识记录，使用 Ollama embedding model 生成向量，并保存到 ChromaDB：
+
+```text
+D:/AI_Knowledge/vector_store
+```
+
+安装或更新依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+拉取默认 embedding model：
+
+```bash
+ollama pull nomic-embed-text
+```
+
+运行应用：
+
+```bash
+streamlit run app.py
+```
+
+使用流程：
+
+1. 先在 `Ingest` 页面导入一些网页或文件。
+2. 进入 `Search` 页面。
+3. 点击 `Rebuild Semantic Index`，手动生成 ChromaDB 向量索引。
+4. 将 `Search Mode` 切换为 `Semantic Search`。
+5. 输入自然语言问题，并选择 `top_k`。
+
+Keyword search 和 semantic search 的区别：
+
+- Keyword Search：使用 SQLite `LIKE` 匹配关键词，适合查找明确词语、文件名、topic 或 URL。
+- Semantic Search：把问题和文档摘要都转成 embedding，按语义相似度查找，适合“我记得意思但不记得原词”的场景。
+
+Semantic index 不会在每次搜索时自动重建。这样可以避免大量文档时反复生成 embeddings。新增或更新大量文档后，请手动点击 `Rebuild Semantic Index`。
+
 ## 支持的文件类型
 
 - 网页 URL：优先使用 `trafilatura`，失败后使用 `requests` + `BeautifulSoup`。

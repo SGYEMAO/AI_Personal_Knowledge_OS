@@ -29,6 +29,7 @@ class CleanBadRecordsTests(unittest.TestCase):
         os.environ["KNOWLEDGE_BASE_PATH"] = str(self.markdown_dir)
         os.environ["REPORTS_PATH"] = str(self.root / "reports")
         os.environ["EXPORTS_PATH"] = str(self.root / "exports")
+        os.environ["VECTOR_STORE_PATH"] = str(self.root / "vector_store")
 
     def tearDown(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)

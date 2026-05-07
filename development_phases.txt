@@ -2,7 +2,9 @@ v0.1 Ingestion
 v0.2 Search
 v0.3 Semantic Search
 v0.4 Chunking
-v0.5 Reports
-v0.6 Knowledge Linking
-v0.7 Knowledge Graph
-v0.8 Agent Automation
+v0.5 YouTube transcript ingestion
+v0.6 Whisper fallback for videos without subtitles
+v0.7 Reports
+v0.8 Knowledge Linking
+v0.9 Knowledge Graph
+v0.10 Agent Automation

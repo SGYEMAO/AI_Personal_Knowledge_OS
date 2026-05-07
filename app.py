@@ -8,6 +8,12 @@ import streamlit as st
 from src.ingest import ProcessResult, process_folder, process_url
 from src.storage import get_all_topics, get_document_count, parse_stored_list, search_documents
 from src.utils import AppSettings, load_settings
+from src.vector_store import (
+    VectorStoreError,
+    get_vector_index_count,
+    rebuild_vector_index,
+    semantic_search,
+)
 
 
 def _render_summary(summary: dict) -> None:
@@ -81,6 +87,8 @@ def _render_sidebar(settings: AppSettings) -> None:
     st.sidebar.code(str(settings.reports_path))
     st.sidebar.markdown("Exports")
     st.sidebar.code(str(settings.exports_path))
+    st.sidebar.markdown("Vector Store")
+    st.sidebar.code(str(settings.vector_store_path))
 
 
 def _render_ingest_page(settings: AppSettings) -> None:
@@ -131,6 +139,34 @@ def _render_search_page(settings: AppSettings) -> None:
         st.info("No knowledge database found yet. Please ingest some documents first.")
         return
 
+    if st.button("Rebuild Semantic Index"):
+        _handle_rebuild_semantic_index(settings)
+
+    search_mode = st.selectbox("Search Mode", ["Keyword Search", "Semantic Search"])
+    if search_mode == "Semantic Search":
+        _render_semantic_search(settings)
+    else:
+        _render_keyword_search()
+
+
+def _handle_rebuild_semantic_index(settings: AppSettings) -> None:
+    """Rebuild the vector index and render summary counts."""
+    with st.spinner("Rebuilding semantic index..."):
+        try:
+            result = rebuild_vector_index(settings)
+        except VectorStoreError as exc:
+            st.error(str(exc))
+            return
+    indexed, skipped, errors = st.columns(3)
+    indexed.metric("indexed_count", result.get("indexed_count", 0))
+    skipped.metric("skipped_count", result.get("skipped_count", 0))
+    errors.metric("error_count", result.get("error_count", 0))
+    if result.get("last_error"):
+        st.warning(str(result["last_error"]))
+
+
+def _render_keyword_search() -> None:
+    """Render the existing SQLite keyword search UI."""
     topics = ["All Topics"] + get_all_topics()
     keyword = st.text_input("Search keyword")
     topic = st.selectbox("Topic", topics)
@@ -155,6 +191,37 @@ def _render_search_page(settings: AppSettings) -> None:
         return
 
     st.subheader(f"Results ({len(results)})")
+    for result in results:
+        _render_search_result(result)
+
+
+def _render_semantic_search(settings: AppSettings) -> None:
+    """Render natural-language semantic search over ChromaDB."""
+    query = st.text_input("Semantic query")
+    top_k = st.slider("top_k", min_value=1, max_value=20, value=5)
+    search_clicked = st.button("Search", type="primary")
+
+    if not search_clicked:
+        return
+    if not query.strip():
+        st.warning("Enter a semantic query.")
+        return
+
+    if get_vector_index_count(settings) == 0:
+        st.info("Semantic index is empty. Please click Rebuild Semantic Index first.")
+        return
+
+    try:
+        results = semantic_search(query, settings=settings, top_k=top_k)
+    except Exception as exc:
+        st.error(str(exc))
+        return
+
+    if not results:
+        st.info("No matching knowledge records found.")
+        return
+
+    st.subheader(f"Semantic Results ({len(results)})")
     for result in results:
         _render_search_result(result)
 
@@ -216,6 +283,10 @@ def _render_search_result(result: dict) -> None:
 
         st.markdown("**Processed At**")
         st.write(result.get("processed_at") or "Unknown")
+
+        if result.get("distance") is not None:
+            st.markdown("**Similarity Distance**")
+            st.write(result["distance"])
 
 
 def main() -> None:

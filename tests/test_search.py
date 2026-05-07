@@ -32,6 +32,7 @@ class SearchStorageTests(unittest.TestCase):
         os.environ["KNOWLEDGE_BASE_PATH"] = str(self.root / "knowledge_base")
         os.environ["REPORTS_PATH"] = str(self.root / "reports")
         os.environ["EXPORTS_PATH"] = str(self.root / "exports")
+        os.environ["VECTOR_STORE_PATH"] = str(self.root / "vector_store")
         self._insert_documents()
 
     def tearDown(self) -> None:

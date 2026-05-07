@@ -5,6 +5,7 @@ __pycache__/
 *.db
 data/
 knowledge_base/
+vector_store/
 logs/
 tmp/
 tests/_tmp/

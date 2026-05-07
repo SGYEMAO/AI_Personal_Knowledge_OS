@@ -43,9 +43,12 @@ class KnowledgeOSSmokeTests(unittest.TestCase):
         os.environ["SQLITE_DB_PATH"] = str(self.root / "data" / "knowledge.db")
         os.environ["REPORTS_PATH"] = str(self.root / "reports")
         os.environ["EXPORTS_PATH"] = str(self.root / "exports")
+        os.environ["VECTOR_STORE_PATH"] = str(self.root / "vector_store")
         os.environ["LLM_PROVIDER"] = "openai"
         os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434"
         os.environ["OLLAMA_MODEL"] = "llama3.1"
+        os.environ["EMBEDDING_PROVIDER"] = "ollama"
+        os.environ["OLLAMA_EMBED_MODEL"] = "nomic-embed-text"
         self.settings = load_settings(create_dirs=True)
         self.original_summarize = ingest.summarize_text
         ingest.summarize_text = fake_summary
