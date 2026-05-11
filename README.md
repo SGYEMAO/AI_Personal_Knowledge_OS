@@ -38,7 +38,7 @@ AI_Personal_Knowledge_OS/
 └── tests/
 ```
 
-## 外部知识资产目录
+## External Knowledge Asset Storage
 
 SQLite databases and Markdown knowledge files are intentionally stored outside the project directory：
 
