@@ -174,3 +174,28 @@ def iter_supported_files(folder: Path) -> list[Path]:
         if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
             files.append(path)
     return sorted(files, key=lambda item: str(item).lower())
+
+
+def open_local_file(path: str) -> tuple[bool, str]:
+    """
+    Open local file using Windows default application.
+
+    Returns:
+        (success, message)
+    """
+    if not path or not str(path).strip():
+        return False, "File not found."
+
+    try:
+        file_path = Path(str(path)).expanduser()
+        if not file_path.exists() or not file_path.is_file():
+            return False, "File not found."
+
+        startfile = getattr(os, "startfile", None)
+        if startfile is None:
+            return False, "Failed to open file."
+
+        startfile(str(file_path.resolve()))
+        return True, "Opened successfully."
+    except Exception:
+        return False, "Failed to open file."

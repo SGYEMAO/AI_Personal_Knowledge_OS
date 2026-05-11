@@ -32,10 +32,12 @@ class VectorStoreTests(unittest.TestCase):
         os.environ["OLLAMA_EMBED_MODEL"] = "nomic-embed-text"
         self.settings = load_settings(create_dirs=True)
         self.original_get_collection = vector_store.get_chroma_collection
+        self.original_get_existing_collection = vector_store._get_existing_chroma_collection
         self.original_get_embedding = vector_store.get_ollama_embedding
 
     def tearDown(self) -> None:
         vector_store.get_chroma_collection = self.original_get_collection
+        vector_store._get_existing_chroma_collection = self.original_get_existing_collection
         vector_store.get_ollama_embedding = self.original_get_embedding
         shutil.rmtree(self.root, ignore_errors=True)
 
@@ -76,6 +78,41 @@ class VectorStoreTests(unittest.TestCase):
 
         self.assertEqual(result["indexed_count"], 0)
         self.assertEqual(result["skipped_count"], 0)
+        self.assertEqual(result["error_count"], 0)
+
+    def test_delete_document_embeddings_deletes_matching_ids(self) -> None:
+        """Vector deletion removes only vectors matching document ids."""
+
+        class FakeCollection:
+            def __init__(self) -> None:
+                self.ids = {"1", "2", "3"}
+                self.deleted: list[str] = []
+
+            def get(self, ids: list[str]) -> dict:
+                return {"ids": [item for item in ids if item in self.ids]}
+
+            def delete(self, ids: list[str]) -> None:
+                self.deleted.extend(ids)
+                for item in ids:
+                    self.ids.discard(item)
+
+        collection = FakeCollection()
+        vector_store._get_existing_chroma_collection = lambda settings: collection
+
+        result = vector_store.delete_document_embeddings([1, 3, 999], self.settings)
+
+        self.assertEqual(result["deleted_vector_count"], 2)
+        self.assertEqual(result["error_count"], 0)
+        self.assertEqual(collection.deleted, ["1", "3"])
+        self.assertEqual(collection.ids, {"2"})
+
+    def test_delete_document_embeddings_missing_collection_does_not_crash(self) -> None:
+        """Missing ChromaDB collection returns zero counts without raising."""
+        vector_store._get_existing_chroma_collection = lambda settings: None
+
+        result = vector_store.delete_document_embeddings([1, 2], self.settings)
+
+        self.assertEqual(result["deleted_vector_count"], 0)
         self.assertEqual(result["error_count"], 0)
 
     def test_rebuild_vector_index_empty_documents_does_not_crash(self) -> None:

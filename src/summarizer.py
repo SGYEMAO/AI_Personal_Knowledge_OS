@@ -187,7 +187,9 @@ def _is_ollama_model_not_found(status_code: int, response_text: str) -> bool:
 def _build_prompt(text: str, *, source: str, title_hint: str) -> str:
     """Build the user prompt for structured summarization."""
     return f"""
-Summarize the following source for a personal knowledge base.
+You are an AI knowledge analyst building a personal knowledge base.
+
+Analyze the following source and create a detailed, information-dense structured summary.
 
 Return JSON exactly in this shape:
 {{
@@ -201,9 +203,18 @@ Return JSON exactly in this shape:
 
 Rules:
 - Keep the title concise and filesystem friendly.
-- Use 3 to 8 key_points.
-- Use short topic labels.
-- If there are no action items or entities, return an empty array.
+- The summary should be detailed, not brief.
+- Write the summary in 300 to 800 words if the source has enough content.
+- Preserve important technical terms, product names, tools, services, acronyms, and workflows.
+- Include implementation details, configuration ideas, procedures, architecture concepts, and best practices when present.
+- Use 8 to 15 key_points.
+- Key points should be specific and useful for later retrieval.
+- Use 5 to 12 short topic labels.
+- Extract important entities such as products, platforms, modules, services, tools, protocols, standards, roles, and organizations.
+- If there are no action items, return an empty array.
+- Do not invent facts that are not supported by the source.
+- Focus on knowledge value, not marketing language.
+- Make the output useful for semantic search.
 
 Source: {source}
 Title hint: {title_hint}

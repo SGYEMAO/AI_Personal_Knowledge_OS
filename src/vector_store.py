@@ -139,6 +139,43 @@ def get_vector_index_count(settings: AppSettings) -> int:
         return 0
 
 
+def delete_document_embeddings(document_ids: list[int], settings: AppSettings) -> dict:
+    """Delete semantic vectors for SQLite document ids from ChromaDB."""
+    result = {"deleted_vector_count": 0, "error_count": 0, "errors": []}
+    normalized_ids = _normalize_document_ids(document_ids)
+    if not normalized_ids:
+        return result
+
+    if not settings.vector_store_path.exists():
+        return result
+
+    try:
+        collection = _get_existing_chroma_collection(settings)
+    except Exception as exc:
+        result["error_count"] = 1
+        result["errors"].append(str(exc))
+        return result
+
+    if collection is None:
+        return result
+
+    chroma_ids = [str(document_id) for document_id in normalized_ids]
+    existing_ids = _get_existing_vector_ids(collection, chroma_ids, result)
+    if result["error_count"]:
+        return result
+    if not existing_ids:
+        return result
+
+    try:
+        collection.delete(ids=existing_ids)
+        result["deleted_vector_count"] = len(existing_ids)
+    except Exception as exc:
+        result["error_count"] += 1
+        result["errors"].append(str(exc))
+
+    return result
+
+
 def _reset_chroma_collection(settings: AppSettings):
     """Delete and recreate the ChromaDB collection used for rebuilt indexes."""
     try:
@@ -153,6 +190,55 @@ def _reset_chroma_collection(settings: AppSettings):
     except Exception:
         pass
     return client.get_or_create_collection(name=COLLECTION_NAME)
+
+
+def _get_existing_chroma_collection(settings: AppSettings):
+    """Return the ChromaDB collection when it exists, otherwise None."""
+    try:
+        import chromadb
+    except ImportError as exc:
+        raise VectorStoreError("ChromaDB is not installed. Run: pip install -r requirements.txt") from exc
+
+    client = chromadb.PersistentClient(path=str(settings.vector_store_path))
+    try:
+        collections = client.list_collections()
+        collection_names = {
+            str(getattr(collection, "name", collection))
+            for collection in collections
+        }
+        if COLLECTION_NAME not in collection_names:
+            return None
+    except Exception:
+        pass
+
+    try:
+        return client.get_collection(name=COLLECTION_NAME)
+    except Exception:
+        return None
+
+
+def _get_existing_vector_ids(collection, chroma_ids: list[str], result: dict) -> list[str]:
+    """Return vector ids that currently exist in a ChromaDB collection."""
+    try:
+        existing = collection.get(ids=chroma_ids)
+    except Exception as exc:
+        result["error_count"] += 1
+        result["errors"].append(str(exc))
+        return []
+    return [str(item) for item in existing.get("ids", [])]
+
+
+def _normalize_document_ids(document_ids: list[int]) -> list[int]:
+    """Return sorted unique positive integer document ids."""
+    normalized: set[int] = set()
+    for document_id in document_ids:
+        try:
+            value = int(document_id)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            normalized.add(value)
+    return sorted(normalized)
 
 
 def _build_metadata(doc: dict) -> dict[str, Any]:

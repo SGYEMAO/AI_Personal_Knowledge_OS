@@ -11,6 +11,12 @@ from src.extractors import AntiBotDetectionError, ExtractedContent, ExtractionEr
 from src.storage import find_existing_document, insert_document, save_markdown_summary
 from src.summarizer import MissingAPIKeyError, SummarizationError, summarize_text
 from src.utils import AppSettings, iter_supported_files, load_settings
+from src.vector_store import upsert_document_embedding
+
+
+SEMANTIC_EMBEDDING_WARNING = (
+    "Document saved, but semantic embedding failed. You can rebuild the semantic index later."
+)
 
 
 @dataclass
@@ -25,6 +31,8 @@ class ProcessResult:
     summary: dict[str, Any] | None = None
     markdown_path: Path | None = None
     sqlite_status: str = ""
+    semantic_index_status: str = "skipped"
+    semantic_index_error: str = ""
     error: str = ""
 
 
@@ -121,6 +129,21 @@ def _process_extracted(extracted: ExtractedContent, *, settings: AppSettings) ->
             markdown_path=markdown_path,
             processed_at=processed_at,
         )
+        semantic_index_status, semantic_index_error = _upsert_semantic_index(
+            {
+                "id": row_id,
+                "title": str(summary.get("title") or extracted.title),
+                "summary": str(summary.get("summary") or ""),
+                "source_type": extracted.source_type,
+                "source_path": extracted.source_path,
+                "source_url": extracted.source_url,
+                "topics": summary.get("topics") or [],
+                "entities": summary.get("entities") or [],
+                "markdown_path": str(markdown_path),
+                "processed_at": processed_at,
+            },
+            settings=settings,
+        )
         return ProcessResult(
             status="processed",
             source=source,
@@ -130,6 +153,8 @@ def _process_extracted(extracted: ExtractedContent, *, settings: AppSettings) ->
             summary=summary,
             markdown_path=markdown_path,
             sqlite_status=f"Inserted documents.id={row_id}",
+            semantic_index_status=semantic_index_status,
+            semantic_index_error=semantic_index_error,
         )
     except (MissingAPIKeyError, SummarizationError, ExtractionError) as exc:
         _cleanup_uncommitted_markdown(markdown_path)
@@ -173,3 +198,12 @@ def _cleanup_uncommitted_markdown(markdown_path: Path | None) -> None:
             markdown_path.unlink()
     except OSError:
         pass
+
+
+def _upsert_semantic_index(doc: dict[str, Any], *, settings: AppSettings) -> tuple[str, str]:
+    """Upsert one processed document into the semantic index without failing ingest."""
+    try:
+        upsert_document_embedding(doc, settings)
+        return "indexed", ""
+    except Exception as exc:
+        return "failed", str(exc)

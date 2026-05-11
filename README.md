@@ -84,7 +84,13 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-打开页面后可以选择 LLM Provider，输入网页 URL、本地文件夹路径，点击 `Process`。如果选择 `openai` 且 `OPENAI_API_KEY` 缺失，页面会显示明确错误，不会崩溃。
+打开页面后，sidebar 会显示三个区域：
+
+- `Pages`：在 `Ingest`、`Search`、`Maintenance` 页面之间切换。
+- `Settings`：显示默认 LLM 配置，包括 `Default LLM Provider`、`Default LLM Model` 和 `Ollama Base URL`。这些是导入和总结时使用的默认配置。
+- `Storage`：显示 Knowledge Base、SQLite、Reports 和 Vector Store 的路径。
+
+在 `Ingest` 页面仍然可以选择当前这次处理使用的 LLM Provider，并会显示 `Current LLM provider` 和 `Model` 作为当前运行状态。输入网页 URL、本地文件夹路径，点击 `Process`。如果选择 `openai` 且 `OPENAI_API_KEY` 缺失，页面会显示明确错误，不会崩溃。
 
 ## Ollama 本地模型
 
@@ -141,10 +147,11 @@ D:/AI_Knowledge/data/knowledge.db
 
 ## v0.2 Search & Retrieval
 
-Streamlit 侧边栏提供两个页面：
+Streamlit 侧边栏提供三个页面：
 
 - `Ingest`：导入网页 URL 或本地文件夹，保持原有总结、Markdown 保存、SQLite 写入和去重逻辑。
 - `Search`：从 SQLite `documents` 表中检索已经总结过的知识记录。
+- `Maintenance`：按 source folder 预览和删除 SQLite records、生成的 Markdown，以及对应 semantic vectors。
 
 Search 页面顶部会显示：
 
@@ -159,7 +166,9 @@ Search 页面顶部会显示：
 - `Source Type`：支持 `All`、`webpage`、`file`。
 - `Processed date range`：根据 `processed_at` 进行日期范围筛选；日期为空或无法解析时不会崩溃。
 
-当前检索方式是 SQLite keyword search。搜索结果会显示摘要预览、topics、entities、source type、原始来源、Markdown 路径和处理时间。`source_url` 会显示为可点击链接，Markdown 文件请根据页面展示的完整路径手动打开。
+当前检索方式是 SQLite keyword search。搜索结果会显示摘要预览、topics、entities、source type、原始来源、Markdown 路径和处理时间。`source_url` 会显示为可点击链接。
+
+Open Source File and Open Markdown File use the Windows default application via `os.startfile()`. 本地文件只会在用户点击按钮时打开，不会自动打开文件。
 
 如果 SQLite 数据库还不存在，Search 页面会提示：
 
@@ -168,6 +177,19 @@ No knowledge database found yet. Please ingest some documents first.
 ```
 
 ## Maintenance
+
+Streamlit sidebar includes a `Maintenance` page. Use `Delete records by source folder` when you want to remove generated knowledge records for a specific local source folder.
+
+Workflow:
+
+1. Enter `Source folder path`.
+2. Click `Preview` to review matching records from SQLite.
+3. Check `I understand this will delete SQLite records and generated Markdown files.`
+4. Click `Delete`.
+
+The Maintenance page deletes matching SQLite `documents` records and generated Markdown files only. It does not delete original source files. After records are deleted, the app automatically removes matching document vectors from the ChromaDB semantic index.
+
+Only rebuild the semantic index manually when vector cleanup fails, when you need to repair missing embeddings, or after changing the embedding model.
 
 如果旧版本曾经把验证页、反爬页面或 `environment_exception` 内容写入知识库，可以运行维护脚本清理脏数据：
 
@@ -213,8 +235,8 @@ streamlit run app.py
 使用流程：
 
 1. 先在 `Ingest` 页面导入一些网页或文件。
-2. 进入 `Search` 页面。
-3. 点击 `Rebuild Semantic Index`，手动生成 ChromaDB 向量索引。
+2. 新文档在成功保存到 SQLite 后会自动增量写入 semantic index。
+3. 进入 `Search` 页面。
 4. 将 `Search Mode` 切换为 `Semantic Search`。
 5. 输入自然语言问题，并选择 `top_k`。
 
@@ -223,7 +245,15 @@ Keyword search 和 semantic search 的区别：
 - Keyword Search：使用 SQLite `LIKE` 匹配关键词，适合查找明确词语、文件名、topic 或 URL。
 - Semantic Search：把问题和文档摘要都转成 embedding，按语义相似度查找，适合“我记得意思但不记得原词”的场景。
 
-Semantic index 不会在每次搜索时自动重建。这样可以避免大量文档时反复生成 embeddings。新增或更新大量文档后，请手动点击 `Rebuild Semantic Index`。
+`Rebuild Semantic Index` 保留为全量重建按钮，主要用于第一次初始化旧数据、修复缺失 embeddings，或更换 embedding model 后重建。Semantic index 不会在每次搜索时自动重建。这样可以避免大量文档时反复生成 embeddings。
+
+如果单条文档保存成功但 embedding 失败，Ingest 页面会提示：
+
+```text
+Document saved, but semantic embedding failed. You can rebuild the semantic index later.
+```
+
+这不会影响 Markdown 和 SQLite 保存。
 
 ## 支持的文件类型
 

@@ -51,10 +51,14 @@ class KnowledgeOSSmokeTests(unittest.TestCase):
         os.environ["OLLAMA_EMBED_MODEL"] = "nomic-embed-text"
         self.settings = load_settings(create_dirs=True)
         self.original_summarize = ingest.summarize_text
+        self.original_upsert = ingest.upsert_document_embedding
+        self.embedding_calls: list[dict[str, object]] = []
         ingest.summarize_text = fake_summary
+        ingest.upsert_document_embedding = self._fake_upsert
 
     def tearDown(self) -> None:
         ingest.summarize_text = self.original_summarize
+        ingest.upsert_document_embedding = self.original_upsert
         shutil.rmtree(self.root, ignore_errors=True)
 
     def test_process_txt_md_docx_pdf_and_dedupe(self) -> None:
@@ -127,6 +131,7 @@ class KnowledgeOSSmokeTests(unittest.TestCase):
         self.assertEqual(result.message, ANTI_BOT_MESSAGE)
         self.assertFalse(self.settings.sqlite_db_path.exists())
         self.assertEqual(list(self.settings.knowledge_base_path.rglob("*.md")), [])
+        self.assertEqual(self.embedding_calls, [])
 
     def test_failed_extraction_does_not_persist_or_summarize(self) -> None:
         """Failed local extraction returns failed without LLM, SQLite, or Markdown."""
@@ -145,6 +150,37 @@ class KnowledgeOSSmokeTests(unittest.TestCase):
         self.assertEqual(result.status, "failed", result)
         self.assertFalse(self.settings.sqlite_db_path.exists())
         self.assertEqual(list(self.settings.knowledge_base_path.rglob("*.md")), [])
+        self.assertEqual(self.embedding_calls, [])
+
+    def test_processed_document_calls_semantic_upsert(self) -> None:
+        """Processed documents are incrementally added to the semantic index."""
+        source_file = self.root / "semantic.txt"
+        source_file.write_text("Semantic indexing test content.", encoding="utf-8")
+
+        result = ingest.process_file(source_file, settings=self.settings)
+
+        self.assertEqual(result.status, "processed", result)
+        self.assertEqual(result.semantic_index_status, "indexed")
+        self.assertEqual(len(self.embedding_calls), 1)
+        self.assertEqual(self.embedding_calls[0]["id"], 1)
+
+    def test_embedding_failure_does_not_fail_ingest(self) -> None:
+        """Embedding failures are surfaced without failing ingest."""
+
+        def fail_upsert(doc: dict[str, object], settings: object) -> None:
+            raise RuntimeError("embedding service down")
+
+        ingest.upsert_document_embedding = fail_upsert
+        source_file = self.root / "embedding_fail.txt"
+        source_file.write_text("Content still saves even if embeddings fail.", encoding="utf-8")
+
+        result = ingest.process_file(source_file, settings=self.settings)
+
+        self.assertEqual(result.status, "processed", result)
+        self.assertEqual(result.semantic_index_status, "failed")
+        self.assertIn("embedding service down", result.semantic_index_error)
+        self.assertTrue(result.markdown_path and result.markdown_path.exists())
+        self.assertTrue(self.settings.sqlite_db_path.exists())
 
     def _write_docx(self, path: Path) -> None:
         """Create a small DOCX fixture if python-docx is installed."""
@@ -168,6 +204,10 @@ class KnowledgeOSSmokeTests(unittest.TestCase):
         page.insert_text((72, 72), "PDF content for testing.")
         document.save(path)
         document.close()
+
+    def _fake_upsert(self, doc: dict[str, object], settings: object) -> None:
+        """Record semantic upsert calls without invoking Ollama or ChromaDB."""
+        self.embedding_calls.append(doc)
 
 
 if __name__ == "__main__":

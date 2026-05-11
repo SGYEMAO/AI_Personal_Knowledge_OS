@@ -169,6 +169,91 @@ def get_document_count() -> int:
     return int(row[0]) if row else 0
 
 
+def preview_documents_by_source_folder(folder_path: str) -> list[dict]:
+    """Return document records whose source_path starts with a normalized folder path."""
+    normalized_folder = _normalize_source_folder_path(folder_path)
+    if not normalized_folder:
+        return []
+
+    db_path = _configured_db_path()
+    if not _documents_table_exists(db_path):
+        return []
+
+    like_value = _escape_like(normalized_folder) + "%"
+    query = """
+        SELECT id, title, source_path, markdown_path, processed_at
+        FROM documents
+        WHERE REPLACE(COALESCE(source_path, ''), '\\', '/') LIKE ? ESCAPE '\\'
+        ORDER BY processed_at DESC, id DESC
+    """
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(query, (like_value,)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    return [dict(row) for row in rows]
+
+
+def delete_documents_by_ids(document_ids: list[int]) -> dict:
+    """Delete documents by id and remove their generated Markdown files when present."""
+    result = {
+        "deleted_records_count": 0,
+        "deleted_markdown_count": 0,
+        "missing_markdown_count": 0,
+        "skipped_reason": "",
+    }
+    normalized_ids = _normalize_document_ids(document_ids)
+    if not normalized_ids:
+        return result
+
+    db_path = _configured_db_path()
+    if not _documents_table_exists(db_path):
+        return result
+
+    placeholders = ",".join("?" for _ in normalized_ids)
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        total_row = connection.execute("SELECT COUNT(*) FROM documents").fetchone()
+        total_count = int(total_row[0]) if total_row else 0
+        rows = [
+            dict(row)
+            for row in connection.execute(
+                f"SELECT id, markdown_path FROM documents WHERE id IN ({placeholders})",
+                normalized_ids,
+            ).fetchall()
+        ]
+
+        if total_count > 0 and len(rows) >= total_count:
+            result["skipped_reason"] = "Refusing to delete all records."
+            return result
+
+        for row in rows:
+            markdown_path = str(row.get("markdown_path") or "").strip()
+            if not markdown_path:
+                result["missing_markdown_count"] += 1
+                continue
+
+            path = Path(markdown_path)
+            if path.exists() and path.is_file():
+                try:
+                    path.unlink()
+                    result["deleted_markdown_count"] += 1
+                except OSError:
+                    result["missing_markdown_count"] += 1
+            else:
+                result["missing_markdown_count"] += 1
+
+        cursor = connection.execute(
+            f"DELETE FROM documents WHERE id IN ({placeholders})",
+            normalized_ids,
+        )
+        connection.commit()
+        result["deleted_records_count"] = max(int(cursor.rowcount), 0)
+
+    return result
+
+
 def parse_stored_list(value: object) -> list[str]:
     """Parse a stored JSON-list or comma-separated string into a clean string list."""
     if value is None:
@@ -219,6 +304,35 @@ def _normalize_document_row(row: dict[str, Any]) -> dict[str, Any]:
     normalized["entities_list"] = parse_stored_list(row.get("entities"))
     normalized["source_kind"] = "webpage" if row.get("source_url") else "file"
     return normalized
+
+
+def _normalize_source_folder_path(folder_path: str) -> str:
+    """Normalize a Windows folder path string for prefix matching."""
+    raw_path = (folder_path or "").strip().strip('"').strip("'")
+    if not raw_path:
+        return ""
+    normalized = str(Path(raw_path).expanduser()).replace("\\", "/")
+    while len(normalized) > 3 and normalized.endswith("/"):
+        normalized = normalized[:-1]
+    return normalized
+
+
+def _escape_like(value: str) -> str:
+    """Escape SQL LIKE wildcard characters in a user-provided prefix."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _normalize_document_ids(document_ids: list[int]) -> list[int]:
+    """Return sorted unique positive integer document ids."""
+    normalized: set[int] = set()
+    for document_id in document_ids:
+        try:
+            value = int(document_id)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            normalized.add(value)
+    return sorted(normalized)
 
 
 def _parse_search_date(value: str | None, *, end_of_day: bool) -> datetime | None:
