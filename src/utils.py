@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -15,6 +16,15 @@ from dotenv import load_dotenv
 
 DEFAULT_KNOWLEDGE_ROOT = Path("D:/AI_Knowledge")
 SUPPORTED_EXTENSIONS = (".txt", ".md", ".pdf", ".docx")
+USER_SETTING_KEYS = {
+    "llm_provider",
+    "openai_model",
+    "ollama_model",
+    "ollama_base_url",
+    "display_language",
+}
+LLM_PROVIDERS = {"openai", "ollama"}
+DISPLAY_LANGUAGES = {"same_as_source", "english", "chinese"}
 
 
 @dataclass(frozen=True)
@@ -27,10 +37,12 @@ class AppSettings:
     reports_path: Path
     exports_path: Path
     vector_store_path: Path
+    settings_path: Path = DEFAULT_KNOWLEDGE_ROOT / "settings.json"
     llm_provider: str = "openai"
     openai_model: str = "gpt-4o-mini"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1"
+    display_language: str = "same_as_source"
     embedding_provider: str = "ollama"
     ollama_embed_model: str = "nomic-embed-text"
     max_input_chars: int = 12000
@@ -57,9 +69,10 @@ def _env_path(name: str, default: Path) -> Path:
 def load_settings(create_dirs: bool = True) -> AppSettings:
     """Load application settings from .env and optionally create directories."""
     load_dotenv()
-    llm_provider = os.getenv("LLM_PROVIDER", "openai").strip().lower() or "openai"
-    if llm_provider not in {"openai", "ollama"}:
-        llm_provider = "openai"
+    llm_provider = _normalize_llm_provider(os.getenv("LLM_PROVIDER", "openai"), "openai")
+    display_language = _normalize_display_language(
+        os.getenv("DISPLAY_LANGUAGE", "same_as_source"), "same_as_source"
+    )
     embedding_provider = os.getenv("EMBEDDING_PROVIDER", "ollama").strip().lower() or "ollama"
 
     settings = AppSettings(
@@ -71,11 +84,13 @@ def load_settings(create_dirs: bool = True) -> AppSettings:
         reports_path=_env_path("REPORTS_PATH", DEFAULT_KNOWLEDGE_ROOT / "reports"),
         exports_path=_env_path("EXPORTS_PATH", DEFAULT_KNOWLEDGE_ROOT / "exports"),
         vector_store_path=_env_path("VECTOR_STORE_PATH", DEFAULT_KNOWLEDGE_ROOT / "vector_store"),
+        settings_path=_env_path("SETTINGS_PATH", DEFAULT_KNOWLEDGE_ROOT / "settings.json"),
         llm_provider=llm_provider,
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
         or "http://localhost:11434",
         ollama_model=os.getenv("OLLAMA_MODEL", "llama3.1").strip() or "llama3.1",
+        display_language=display_language,
         embedding_provider=embedding_provider,
         ollama_embed_model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text").strip()
         or "nomic-embed-text",
@@ -88,6 +103,35 @@ def load_settings(create_dirs: bool = True) -> AppSettings:
     return settings
 
 
+def load_user_settings(settings: AppSettings) -> dict:
+    """Load saved UI preferences from settings.json, returning an empty dict when absent."""
+    try:
+        path = settings.settings_path.expanduser()
+        if not path.exists() or not path.is_file():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_user_settings(settings: AppSettings, values: dict) -> None:
+    """Persist sidebar UI preferences to settings.json without modifying .env."""
+    path = settings.settings_path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clean_values = _clean_user_setting_values(values, base=settings)
+    path.write_text(
+        json.dumps(clean_values, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def get_effective_settings(settings: AppSettings) -> AppSettings:
+    """Return AppSettings with settings.json UI preferences applied over .env defaults."""
+    values = _clean_user_setting_values(load_user_settings(settings), base=settings)
+    return replace(settings, **values) if values else settings
+
+
 def ensure_external_directories(settings: AppSettings) -> None:
     """Create the external durable knowledge directories required by the app."""
     paths = {
@@ -97,9 +141,54 @@ def ensure_external_directories(settings: AppSettings) -> None:
         settings.reports_path,
         settings.exports_path,
         settings.vector_store_path,
+        settings.settings_path.parent,
     }
     for path in paths:
         path.mkdir(parents=True, exist_ok=True)
+
+
+def _clean_user_setting_values(values: dict, *, base: AppSettings) -> dict:
+    """Return validated user preference values that may override AppSettings."""
+    clean: dict[str, str] = {}
+    if not isinstance(values, dict):
+        return clean
+
+    if "llm_provider" in values:
+        clean["llm_provider"] = _normalize_llm_provider(values.get("llm_provider"), base.llm_provider)
+    if "openai_model" in values:
+        clean["openai_model"] = _normalize_non_empty_text(values.get("openai_model"), base.openai_model)
+    if "ollama_model" in values:
+        clean["ollama_model"] = _normalize_non_empty_text(values.get("ollama_model"), base.ollama_model)
+    if "ollama_base_url" in values:
+        clean["ollama_base_url"] = _normalize_non_empty_text(
+            values.get("ollama_base_url"), base.ollama_base_url
+        )
+    display_value = values.get("display_language")
+    if display_value is None and "research_output_language" in values:
+        display_value = values.get("research_output_language")
+    if display_value is not None:
+        clean["display_language"] = _normalize_display_language(
+            display_value, base.display_language
+        )
+    return clean
+
+
+def _normalize_llm_provider(value: object, default: str) -> str:
+    """Normalize an LLM provider value."""
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in LLM_PROVIDERS else default
+
+
+def _normalize_display_language(value: object, default: str) -> str:
+    """Normalize the Search display translation language preference."""
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in DISPLAY_LANGUAGES else default
+
+
+def _normalize_non_empty_text(value: object, default: str) -> str:
+    """Normalize a text preference, preserving the default when empty."""
+    normalized = str(value or "").strip()
+    return normalized or default
 
 
 def now_iso() -> str:
@@ -199,3 +288,17 @@ def open_local_file(path: str) -> tuple[bool, str]:
         return True, "Opened successfully."
     except Exception:
         return False, "Failed to open file."
+
+
+def read_markdown_file(path: str) -> str:
+    """Read a UTF-8 Markdown file, returning an empty string when unavailable."""
+    if not path or not str(path).strip():
+        return ""
+
+    try:
+        markdown_path = Path(str(path)).expanduser()
+        if not markdown_path.exists() or not markdown_path.is_file():
+            return ""
+        return markdown_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""

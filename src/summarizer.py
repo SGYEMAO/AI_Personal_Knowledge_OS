@@ -205,6 +205,7 @@ Rules:
 - Keep the title concise and filesystem friendly.
 - The summary should be detailed, not brief.
 - Write the summary in 300 to 800 words if the source has enough content.
+- Use the dominant language of the source content.
 - Preserve important technical terms, product names, tools, services, acronyms, and workflows.
 - Include implementation details, configuration ideas, procedures, architecture concepts, and best practices when present.
 - Use 8 to 15 key_points.

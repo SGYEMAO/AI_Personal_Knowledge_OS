@@ -4,9 +4,9 @@
 
 ## Overview
 
-AI Personal Knowledge OS is a local-first MVP for turning web pages and local files into durable personal knowledge assets.
+AI Personal Knowledge OS is a local-first multilingual semantic knowledge search engine for web pages and local files.
 
-The app extracts content, summarizes it with an LLM, stores structured metadata in SQLite, saves readable Markdown notes, and supports both keyword search and semantic search.
+The app extracts content, summarizes it with an LLM, stores structured metadata in SQLite, saves readable Markdown notes, and supports keyword search, semantic search, and display-only translation of search results.
 
 Long-term knowledge assets are stored outside the project directory under:
 
@@ -30,6 +30,7 @@ This keeps source code separate from generated knowledge files, databases, repor
 - Anti-bot and verification-page detection before summarization.
 - Keyword search over SQLite records.
 - Semantic search with ChromaDB and Ollama embeddings.
+- Multilingual Search and Semantic Search display translation.
 - Incremental semantic indexing after successful ingestion.
 - Maintenance tools for deleting generated records by source folder.
 - Local file opening from Search results through the Windows default application.
@@ -55,6 +56,7 @@ Core flow:
 6. Metadata is inserted into SQLite.
 7. A semantic embedding is generated and written to ChromaDB.
 8. The user can retrieve knowledge through keyword search or semantic search.
+9. The Search page can translate displayed previews and full summaries without modifying stored records.
 
 ## Project Structure
 
@@ -73,6 +75,7 @@ AI_Personal_Knowledge_OS/
 │   ├── storage.py
 │   ├── embeddings.py
 │   ├── vector_store.py
+│   ├── translator.py
 │   └── utils.py
 ├── scripts/
 │   └── clean_bad_records.py
@@ -107,6 +110,8 @@ OPENAI_API_KEY=your_openai_api_key_here
 LLM_PROVIDER=openai
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.1
+DISPLAY_LANGUAGE=same_as_source
+SETTINGS_PATH=D:/AI_Knowledge/settings.json
 KNOWLEDGE_BASE_PATH=D:/AI_Knowledge/knowledge_base
 SQLITE_DB_PATH=D:/AI_Knowledge/data/knowledge.db
 REPORTS_PATH=D:/AI_Knowledge/reports
@@ -117,6 +122,30 @@ OLLAMA_EMBED_MODEL=nomic-embed-text
 ```
 
 Do not commit `.env`.
+
+`.env` provides initial defaults. User changes made in the Streamlit sidebar are saved separately to `settings.json`, whose default path is:
+
+```text
+D:/AI_Knowledge/settings.json
+```
+
+Do not commit `settings.json`.
+
+`settings.json` stores UI preferences such as:
+
+- `llm_provider`
+- `openai_model`
+- `ollama_model`
+- `ollama_base_url`
+- `display_language`
+
+`DISPLAY_LANGUAGE` controls only Search and Semantic Search display translation. Supported values are:
+
+- `same_as_source`
+- `english`
+- `chinese`
+
+It affects displayed Search previews, Semantic Search previews, and full Markdown display inside the app. It does not modify Markdown files, SQLite summaries, topics, entities, or ChromaDB vectors.
 
 The app automatically creates these external folders on startup:
 
@@ -156,10 +185,14 @@ streamlit run app.py
 The sidebar is organized into:
 
 - `Pages`: choose `Ingest`, `Search`, or `Maintenance`.
-- `Settings`: view default LLM settings used during ingestion and summarization.
+- `Settings`: view default LLM settings and Search display language.
 - `Storage`: view external knowledge, SQLite, reports, and vector store paths.
 
-The `Settings` section shows default configuration, not live execution state.
+The `Settings` section lets you edit default configuration and save it to `settings.json` with `Save Settings`.
+
+Saved settings are loaded automatically on the next app start. `.env` remains the initial default source and is not modified by the app.
+
+Display Language controls Search and Semantic Search display translation. It does not change ingestion summaries or stored knowledge records.
 
 The `Ingest` page still displays the current runtime provider and model:
 
@@ -190,6 +223,10 @@ If `OPENAI_API_KEY` is missing and `openai` is selected, the UI shows a clear wa
 
 If a source was already processed, the app returns `Already processed` and shows the existing Markdown path.
 
+Ingestion summaries use the dominant language of the source content. English documents produce English summaries, Chinese documents produce Chinese summaries, and mixed-language documents preserve important terms and acronyms.
+
+Saved sidebar LLM preferences are used as the default ingestion settings. The `Ingest` page still allows a per-run provider choice, while the active model comes from the saved provider-specific model preference.
+
 ## Search
 
 The `Search` page supports two modes:
@@ -217,13 +254,23 @@ Filters include:
 Search results show:
 
 - Title.
-- Summary preview.
+- Summary preview, optionally translated for display.
 - Topics.
 - Entities.
 - Source type.
 - Source URL or source path.
 - Markdown path.
 - Processed timestamp.
+
+Display Language can translate Search and Semantic Search result previews and the `View Full Summary` content inside the app. When display translation is enabled, each full summary also includes `View Original Content`.
+
+Display translation does not modify:
+
+- Markdown files.
+- SQLite summaries.
+- SQLite topics or entities.
+- ChromaDB vectors.
+- Original source files.
 
 For local source files and Markdown notes, the UI provides:
 
@@ -351,6 +398,12 @@ streamlit run app.py
 
 Set `LLM Provider` to `ollama` on the `Ingest` page when you want to summarize with a local model.
 
+When `Display Language` is set to `English` or `Chinese` and the active provider is `ollama`, local display translation uses:
+
+```bash
+ollama pull qwen2.5
+```
+
 ## Data Quality Rules
 
 Only successfully processed knowledge records should be persisted.
@@ -384,8 +437,7 @@ Blocked or failed pages are shown in the UI or logs only. They should not enter 
 - ChromaDB and FAISS improvements.
 - Notion and Google Drive sync.
 - Knowledge graph with Neo4j or NetworkX.
-- Weekly and monthly report generation.
 - Folder auto-watch ingestion.
 - Browser extension for saving web pages.
 - Better semantic ranking and hybrid search.
-- Export workflows for reports and notes.
+- Export workflows for notes.

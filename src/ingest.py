@@ -10,7 +10,7 @@ from typing import Any
 from src.extractors import AntiBotDetectionError, ExtractedContent, ExtractionError, extract_file, extract_url
 from src.storage import find_existing_document, insert_document, save_markdown_summary
 from src.summarizer import MissingAPIKeyError, SummarizationError, summarize_text
-from src.utils import AppSettings, iter_supported_files, load_settings
+from src.utils import AppSettings, get_effective_settings, iter_supported_files, load_settings
 from src.vector_store import upsert_document_embedding
 
 
@@ -38,7 +38,7 @@ class ProcessResult:
 
 def process_url(url: str, *, settings: AppSettings | None = None) -> ProcessResult:
     """Process one web URL into Markdown and SQLite, with deduplication."""
-    settings = settings or load_settings(create_dirs=True)
+    settings = settings or _default_effective_settings()
     existing = find_existing_document(settings.sqlite_db_path, source_url=url)
     if existing:
         return _already_processed_result(url, "url", existing)
@@ -59,7 +59,7 @@ def process_url(url: str, *, settings: AppSettings | None = None) -> ProcessResu
 
 def process_file(path: Path, *, settings: AppSettings | None = None) -> ProcessResult:
     """Process one local supported file into Markdown and SQLite."""
-    settings = settings or load_settings(create_dirs=True)
+    settings = settings or _default_effective_settings()
     source_path = str(path.expanduser().resolve())
     existing = find_existing_document(settings.sqlite_db_path, source_path=source_path)
     if existing:
@@ -74,7 +74,7 @@ def process_file(path: Path, *, settings: AppSettings | None = None) -> ProcessR
 
 def process_folder(folder: Path, *, settings: AppSettings | None = None) -> list[ProcessResult]:
     """Process every supported file under a local folder."""
-    settings = settings or load_settings(create_dirs=True)
+    settings = settings or _default_effective_settings()
     try:
         files = iter_supported_files(folder.expanduser())
     except Exception as exc:
@@ -91,6 +91,11 @@ def process_folder(folder: Path, *, settings: AppSettings | None = None) -> list
         ]
 
     return [process_file(path, settings=settings) for path in files]
+
+
+def _default_effective_settings() -> AppSettings:
+    """Load .env defaults and apply saved UI preferences for ingestion."""
+    return get_effective_settings(load_settings(create_dirs=True))
 
 
 def _process_extracted(extracted: ExtractedContent, *, settings: AppSettings) -> ProcessResult:

@@ -17,7 +17,16 @@ from src.storage import (
     preview_documents_by_source_folder,
     search_documents,
 )
-from src.utils import AppSettings, load_settings, open_local_file, short_hash
+from src.translator import DEFAULT_OLLAMA_TRANSLATION_MODEL, translate_text
+from src.utils import (
+    AppSettings,
+    get_effective_settings,
+    load_settings,
+    open_local_file,
+    read_markdown_file,
+    save_user_settings,
+    short_hash,
+)
 from src.vector_store import (
     VectorStoreError,
     delete_document_embeddings,
@@ -30,6 +39,11 @@ SEMANTIC_EMBEDDING_WARNING = (
     "Document saved, but semantic embedding failed. "
     "You can rebuild the semantic index later."
 )
+DISPLAY_LANGUAGE_LABELS = {
+    "same_as_source": "Same as source",
+    "english": "English",
+    "chinese": "Chinese",
+}
 
 SEARCH_STATE_DEFAULTS = {
     "current_page": "Ingest",
@@ -45,6 +59,7 @@ SEARCH_STATE_DEFAULTS = {
     "last_keyword_search_ran": False,
     "last_semantic_search_ran": False,
     "file_open_messages": {},
+    "translation_cache": {},
     "maintenance_source_folder": "",
     "maintenance_preview_folder": "",
     "maintenance_preview_results": [],
@@ -66,6 +81,73 @@ def _coerce_option_state(key: str, options: list[str], default: str) -> None:
     """Ensure a selectbox-backed session value exists in the current options."""
     if st.session_state.get(key) not in options:
         st.session_state[key] = default
+
+
+def _initialize_sidebar_settings(settings: AppSettings) -> None:
+    """Initialize sidebar settings widgets from effective settings once per session."""
+    if st.session_state.get("settings_initialized"):
+        return
+    st.session_state["settings_llm_provider"] = settings.llm_provider
+    st.session_state["settings_openai_model"] = settings.openai_model
+    st.session_state["settings_ollama_model"] = settings.ollama_model
+    st.session_state["settings_model"] = settings.active_llm_model
+    st.session_state["settings_ollama_base_url"] = settings.ollama_base_url
+    st.session_state["settings_display_language"] = settings.display_language
+    st.session_state["settings_initialized"] = True
+
+
+def _on_settings_provider_change() -> None:
+    """Switch the editable model field to the selected provider's saved model."""
+    provider = st.session_state.get("settings_llm_provider", "openai")
+    if provider == "ollama":
+        st.session_state["settings_model"] = st.session_state.get("settings_ollama_model", "")
+    else:
+        st.session_state["settings_model"] = st.session_state.get("settings_openai_model", "")
+
+
+def _on_settings_model_change() -> None:
+    """Remember the editable model value under the currently selected provider."""
+    provider = st.session_state.get("settings_llm_provider", "openai")
+    model = st.session_state.get("settings_model", "")
+    if provider == "ollama":
+        st.session_state["settings_ollama_model"] = model
+    else:
+        st.session_state["settings_openai_model"] = model
+
+
+def _sidebar_settings_values(
+    settings: AppSettings,
+    *,
+    provider: str,
+    model: str,
+    ollama_base_url: str,
+    display_language: str,
+) -> dict[str, str]:
+    """Build validated settings values from sidebar widget state."""
+    provider = str(provider or settings.llm_provider).strip().lower()
+    if provider not in {"openai", "ollama"}:
+        provider = settings.llm_provider
+
+    model = str(model or "").strip()
+    openai_model = str(st.session_state.get("settings_openai_model") or settings.openai_model).strip()
+    ollama_model = str(st.session_state.get("settings_ollama_model") or settings.ollama_model).strip()
+    if provider == "ollama":
+        ollama_model = model or settings.ollama_model
+    else:
+        openai_model = model or settings.openai_model
+
+    ollama_base_url = str(ollama_base_url or settings.ollama_base_url).strip()
+    display_language = str(display_language or settings.display_language).strip()
+    if display_language not in DISPLAY_LANGUAGE_LABELS:
+        display_language = settings.display_language
+
+    return {
+        "llm_provider": provider,
+        "openai_model": openai_model or settings.openai_model,
+        "ollama_model": ollama_model or settings.ollama_model,
+        "ollama_base_url": ollama_base_url or settings.ollama_base_url,
+        "display_language": display_language,
+    }
 
 
 def _store_keyword_search_results(results: list[dict], state: MutableMapping | None = None) -> None:
@@ -151,16 +233,55 @@ def _render_result(result: ProcessResult) -> None:
             st.error(result.error or result.message)
 
 
-def _render_sidebar(settings: AppSettings) -> None:
+def _render_sidebar(settings: AppSettings) -> AppSettings:
     """Render default configuration and storage paths in the sidebar."""
+    _initialize_sidebar_settings(settings)
     st.sidebar.header("Settings")
     st.sidebar.caption("These are the default LLM settings used during ingestion and summarization.")
-    st.sidebar.markdown("Default LLM Provider")
-    st.sidebar.code(settings.llm_provider)
-    st.sidebar.markdown("Default LLM Model")
-    st.sidebar.code(settings.active_llm_model)
-    st.sidebar.markdown("Ollama Base URL")
-    st.sidebar.code(settings.ollama_base_url)
+    provider_options = ["openai", "ollama"]
+    _coerce_option_state("settings_llm_provider", provider_options, settings.llm_provider)
+    selected_provider = st.sidebar.selectbox(
+        "Default LLM Provider",
+        provider_options,
+        key="settings_llm_provider",
+        on_change=_on_settings_provider_change,
+    )
+
+    selected_model = st.sidebar.text_input(
+        "Default LLM Model",
+        key="settings_model",
+        on_change=_on_settings_model_change,
+    )
+
+    selected_ollama_base_url = st.sidebar.text_input("Ollama Base URL", key="settings_ollama_base_url")
+    display_language_options = list(DISPLAY_LANGUAGE_LABELS.keys())
+    _coerce_option_state(
+        "settings_display_language",
+        display_language_options,
+        settings.display_language,
+    )
+    selected_display_language = st.sidebar.selectbox(
+        "Display Language",
+        display_language_options,
+        format_func=lambda value: DISPLAY_LANGUAGE_LABELS.get(value, value),
+        key="settings_display_language",
+    )
+    st.sidebar.caption(
+        "This controls the display translation language used in Search and Semantic Results. "
+        "Original Markdown, SQLite records, and semantic index remain unchanged."
+    )
+
+    values = _sidebar_settings_values(
+        settings,
+        provider=selected_provider,
+        model=selected_model,
+        ollama_base_url=selected_ollama_base_url,
+        display_language=selected_display_language,
+    )
+    if st.sidebar.button("Save Settings"):
+        save_user_settings(settings, values)
+        settings = replace(settings, **values)
+        st.sidebar.success("Settings saved successfully.")
 
     st.sidebar.header("Storage")
     st.sidebar.markdown("Knowledge Base")
@@ -171,14 +292,16 @@ def _render_sidebar(settings: AppSettings) -> None:
     st.sidebar.code(str(settings.reports_path))
     st.sidebar.markdown("Vector Store")
     st.sidebar.code(str(settings.vector_store_path))
+    return settings
 
 
 def _render_ingest_page(settings: AppSettings) -> None:
     """Render the existing ingestion workflow."""
     st.header("Ingest")
     provider_options = ["openai", "ollama"]
-    provider_index = provider_options.index(settings.llm_provider)
-    selected_provider = st.selectbox("LLM Provider", provider_options, index=provider_index)
+    if st.session_state.get("ingest_llm_provider") not in provider_options:
+        st.session_state["ingest_llm_provider"] = settings.llm_provider
+    selected_provider = st.selectbox("LLM Provider", provider_options, key="ingest_llm_provider")
     settings = replace(settings, llm_provider=selected_provider)
 
     st.info(f"Current LLM provider: {settings.llm_provider} | Model: {settings.active_llm_model}")
@@ -231,7 +354,7 @@ def _render_search_page(settings: AppSettings) -> None:
     if search_mode == "Semantic Search":
         _render_semantic_search(settings)
     else:
-        _render_keyword_search()
+        _render_keyword_search(settings)
 
 
 def _render_maintenance_page(settings: AppSettings) -> None:
@@ -405,7 +528,7 @@ def _handle_rebuild_semantic_index(settings: AppSettings) -> None:
         st.warning(str(result["last_error"]))
 
 
-def _render_keyword_search() -> None:
+def _render_keyword_search(settings: AppSettings) -> None:
     """Render the existing SQLite keyword search UI."""
     _ensure_search_session_state()
     topics = ["All Topics"] + get_all_topics()
@@ -448,7 +571,7 @@ def _render_keyword_search() -> None:
 
     st.subheader(f"Results ({len(results)})")
     for result in results:
-        _render_search_result(result)
+        _render_search_result(result, settings)
 
 
 def _render_semantic_search(settings: AppSettings) -> None:
@@ -495,7 +618,7 @@ def _render_semantic_search(settings: AppSettings) -> None:
 
     st.subheader(f"Semantic Results ({len(results)})")
     for result in results:
-        _render_search_result(result)
+        _render_search_result(result, settings)
 
 
 def _render_search_overview(settings: AppSettings) -> None:
@@ -521,14 +644,45 @@ def _date_range_values(date_range: object) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _render_search_result(result: dict) -> None:
+def _render_search_result(result: dict, settings: AppSettings) -> None:
     """Render one stored search result."""
     title = result.get("title") or "Untitled"
     source = result.get("source_url") or result.get("source_path") or "Unknown source"
-    with st.expander(str(title), expanded=_result_has_file_open_message(result)):
+    with st.container(border=True):
+        st.markdown(f"**{title}**")
         summary = str(result.get("summary") or "")
-        preview = summary[:300] + ("..." if len(summary) > 300 else "")
+        display_summary, preview_translated = _translate_display_text(
+            summary,
+            settings,
+            cache_seed=f"{_result_identity(result)}:preview",
+        )
+        preview = display_summary[:300] + ("..." if len(display_summary) > 300 else "")
         st.write(preview or "No summary available.")
+        if preview_translated:
+            st.caption(f"Translated display: {DISPLAY_LANGUAGE_LABELS[settings.display_language]}")
+
+        with st.expander("View Full Summary"):
+            full_summary, is_markdown = _full_summary_content(result)
+            if result.get("markdown_path") and not is_markdown:
+                st.warning("Markdown file not found. Showing SQLite summary instead.")
+            if settings.display_language == "same_as_source":
+                _render_full_summary_content(full_summary, is_markdown)
+            else:
+                if result.get("markdown_path") and is_markdown:
+                    st.caption("Display translation is applied in this view. The source note is unchanged.")
+                translated_full, full_translated = _translate_display_text(
+                    full_summary,
+                    settings,
+                    cache_seed=f"{_result_identity(result)}:full",
+                )
+                if full_translated:
+                    _render_full_summary_content(translated_full, is_markdown)
+                else:
+                    st.warning("Translation unavailable. Showing original content.")
+                    _render_full_summary_content(full_summary, is_markdown)
+
+                with st.expander("View Original Content"):
+                    _render_full_summary_content(full_summary, is_markdown)
 
         topics = result.get("topics_list") or parse_stored_list(result.get("topics"))
         entities = result.get("entities_list") or parse_stored_list(result.get("entities"))
@@ -570,18 +724,88 @@ def _render_search_result(result: dict) -> None:
             st.write(result["distance"])
 
 
-def _result_button_key(result: dict, purpose: str) -> str:
-    """Build a stable Streamlit widget key for per-result file actions."""
-    seed = (
+def _render_full_summary_content(content: str, is_markdown: bool) -> None:
+    """Render full content either as Markdown or plain text."""
+    if is_markdown:
+        st.markdown(content or "No summary available.")
+    else:
+        st.write(content or "No summary available.")
+
+
+def _result_identity(result: dict) -> str:
+    """Return a stable identity string for a stored search result."""
+    return str(
         result.get("document_id")
         or result.get("id")
         or result.get("markdown_path")
         or result.get("source_path")
+        or result.get("source_url")
         or result.get("title")
         or "unknown"
     )
+
+
+def _result_button_key(result: dict, purpose: str) -> str:
+    """Build a stable Streamlit widget key for per-result file actions."""
+    seed = _result_identity(result)
     document_id = str(seed) if str(seed).strip() else short_hash(str(result))
     return f"open_{purpose}_{document_id}"
+
+
+def _translation_model_for_settings(settings: AppSettings) -> str:
+    """Return the model used for Search display translation."""
+    if settings.llm_provider == "ollama":
+        return DEFAULT_OLLAMA_TRANSLATION_MODEL
+    return settings.active_llm_model
+
+
+def _translate_display_text(text: str, settings: AppSettings, *, cache_seed: str) -> tuple[str, bool]:
+    """Translate text for display with session cache, preserving original text on fallback."""
+    original = str(text or "")
+    if settings.display_language == "same_as_source" or not original.strip():
+        return original, False
+
+    cache = st.session_state.setdefault("translation_cache", {})
+    model = _translation_model_for_settings(settings)
+    cache_key = "|".join(
+        [
+            settings.display_language,
+            settings.llm_provider,
+            model,
+            short_hash(f"{cache_seed}|{original}", length=16),
+        ]
+    )
+    if cache_key in cache:
+        return str(cache[cache_key]), True
+
+    translated = translate_text(
+        original,
+        settings.display_language,
+        provider=settings.llm_provider,
+        model=model,
+        api_key=settings.openai_api_key,
+        ollama_base_url=settings.ollama_base_url,
+    )
+    if translated and translated != original:
+        cache[cache_key] = translated
+        return translated, True
+    return original, False
+
+
+def _read_result_markdown_content(result: dict) -> str:
+    """Read the Markdown note associated with a search result, if available."""
+    markdown_path = result.get("markdown_path")
+    if not markdown_path:
+        return ""
+    return read_markdown_file(str(markdown_path))
+
+
+def _full_summary_content(result: dict) -> tuple[str, bool]:
+    """Return full result content and whether it came from the Markdown note."""
+    markdown_content = _read_result_markdown_content(result)
+    if markdown_content:
+        return markdown_content, True
+    return str(result.get("summary") or ""), False
 
 
 def _result_has_file_open_message(result: dict) -> bool:
@@ -620,7 +844,7 @@ def main() -> None:
     _ensure_search_session_state()
 
     try:
-        settings = load_settings(create_dirs=True)
+        settings = get_effective_settings(load_settings(create_dirs=True))
     except Exception as exc:
         st.error(f"Failed to initialize external knowledge directories: {exc}")
         st.stop()
@@ -633,7 +857,7 @@ def main() -> None:
     st.sidebar.header("Pages")
     page = st.sidebar.selectbox("Select page", page_options, key="current_page")
 
-    _render_sidebar(settings)
+    settings = _render_sidebar(settings)
 
     if page == "Maintenance":
         _render_maintenance_page(settings)
